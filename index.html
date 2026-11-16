@@ -233,7 +233,11 @@
         <div class="chips" data-name="malloc"><button data-v="PC">PC</button><button data-v="CF">CF</button></div>
       </div>
 
-      <label>Amount</label>
+      <div id="mvSwipeBox" hidden>
+        <label>Card machine swipes (NC) for this form</label>
+        <input id="mvSwipes" class="money" type="text" inputmode="decimal" placeholder="0.00">
+      </div>
+      <label id="mvAmountLab">Amount</label>
       <input id="mvAmount" class="money" type="text" inputmode="decimal" placeholder="0.00">
       <div class="split2">
         <div><label>Date</label><input id="mvDate" type="date"></div>
@@ -278,12 +282,33 @@
       <button class="btn dark" id="moMove">Move unticked to next month</button>
     </div>
     <div class="card">
+      <h2>Cash &amp; other slips</h2>
+      <p class="note" style="margin-top:0">Not on the bank statement: cash box, own card and EFT from the main account. Tick anything that belongs to next month, then move it. Split slips (PC + CF) move together.</p>
+      <div id="moCash"></div>
+      <div style="height:10px"></div>
+      <button class="btn dark" id="moCashMove">Move ticked to next month</button>
+    </div>
+    <div class="card">
       <h2>Month-end</h2>
       <button class="btn" id="moCopy">Copy for Excel</button>
       <div style="height:10px"></div>
       <button class="btn dark" id="moPdf">Build slips PDF</button>
       <p class="note" id="moPdfLink"></p>
       <textarea id="moOut" hidden readonly></textarea>
+    </div>
+    <div class="card">
+      <h2>Month-end pack (finance Excel)</h2>
+      <p class="note" style="margin-top:0">Count the cash box by note and coin, save it, then build this month's MRS petty cash form – filled in, in voucher order, ready to check and sign.</p>
+      <table class="tbl" id="pkCount"></table>
+      <div style="height:8px"></div>
+      <button class="btn alt" id="pkSaveCount">Save count as month-end cash</button>
+      <div style="height:14px"></div>
+      <div id="pkCheck"></div>
+      <div style="height:10px"></div>
+      <button class="btn dark" id="pkBuild">Build Excel pack</button>
+      <div style="height:8px"></div>
+      <button class="btn alt" id="pkShare" hidden>Share the Excel file</button>
+      <p class="note" id="pkMsg"></p>
     </div>
   </section>
 
@@ -339,6 +364,9 @@
 <input type="file" id="galIn" accept="image/*" hidden>
 <div id="busy"><div class="spin"></div><div id="busyMsg">Working…</div></div>
 <div id="toast"></div>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js" defer></script>
+<script src="pack.js"></script>
+<script src="fill.js"></script>
 
 <script>
 /* Paste your Apps Script web app /exec URL here before publishing. It can also be set in Settings. */
@@ -469,7 +497,7 @@ function buildExport(entries, months, m, comma) {
       c.cost = a - v; c.vat = v;
       if (e.Side === 'CASH') c.cash = a; else if (e.Side === 'CARD') c.swipe = a; else if (e.Side === 'EFT') c.eft = a;
       else note = ('Own card. ' + note).trim();
-      if (e.Date.slice(0, 7) !== m) note = ('Bought ' + e.Date + ', on this statement. ' + note).trim();
+      if (e.Date.slice(0, 7) !== m) note = ('Bought ' + e.Date + (e.Side === 'CARD' ? ', on this statement. ' : ', counted this month. ') + note).trim();
     } else if (e.Kind === 'IN') {
       if (e.Direction === 'CASH_IN') { c.swipe = a; note = ('Cash exchange: cash in, EFT out. ' + note).trim(); }
       else { c.cx = a; note = ('Cash exchange: EFT in, cash out. ' + note).trim(); }
@@ -926,7 +954,7 @@ function openMove(kind, preset) {
   const types = kind === 'IN' ? IN_TYPES : OUT_TYPES;
   $('#mvTitle').textContent = kind === 'IN' ? 'Money in' : 'Cash out';
   $('#mvTypes').innerHTML = types.map(t => '<button data-v="' + t[0] + '">' + esc(t[1]) + '</button>').join('');
-  ['#mvAmount', '#mvName', '#mvNote'].forEach(id => $(id).value = '');
+  ['#mvAmount', '#mvName', '#mvNote', '#mvSwipes'].forEach(id => $(id).value = '');
   $('#mvDate').value = todayISO();
   $('#nameList').innerHTML = recentNames(kind).map(n => '<option value="' + esc(n) + '">').join('');
   setChip('mside', ''); setChip('mdir', 'EFT_IN'); setChip('malloc', '');
@@ -947,6 +975,8 @@ function syncMove() {
   $('#mvSideBox').hidden = type === 'CASH_EXCHANGE';
   $('#mvSideLab').textContent = S.move === 'IN' ? 'Landed in' : 'Paid out of';
   $('#mvAllocBox').hidden = !(S.move === 'OUT' && (type === 'BANK_FEE' || type === 'OTHER_OUT'));
+  $('#mvSwipeBox').hidden = type !== 'KITCHEN_SALES';
+  $('#mvAmountLab').textContent = type === 'KITCHEN_SALES' ? 'Cash takings (0 if all swipes)' : 'Amount';
   if (type === 'BANK_FEE' && !chipVal('malloc')) setChip('malloc', 'PC');
   $('#mvNameLab').textContent = S.move === 'IN' ? 'From whom' : (type === 'CASH_DRAW' ? 'Who drew it' : 'Who / what');
   const oi = openItems(S.entries);
@@ -977,7 +1007,11 @@ $('#hIn').onclick = () => openMove('IN');
 $('#hOut').onclick = () => openMove('OUT');
 $('#mvSave').onclick = async () => {
   const type = chipVal('mtype'); if (!type) return toast('Pick a type', true);
-  const amount = parseMoney($('#mvAmount').value); if (!(amount > 0)) return toast('Enter the amount', true);
+  const swipes = type === 'KITCHEN_SALES' ? (parseMoney($('#mvSwipes').value) || 0) : 0;
+  const amount = parseMoney($('#mvAmount').value) || 0;
+  if (!(amount > 0) && !(type === 'KITCHEN_SALES' && swipes > 0)) return toast('Enter the amount', true);
+  let note = $('#mvNote').value.trim();
+  if (swipes > 0 && !/swipes?/i.test(note)) note = ('Swipes R' + r2(swipes) + ' ' + note).trim();
   const side = type === 'CASH_EXCHANGE' ? 'BANK' : chipVal('mside'); if (!side) return toast('Pick cash box or bank', true);
   const name = $('#mvName').value.trim();
   if (type === 'STAFF_WITHDRAWAL' && !name) return toast('Who took the cash?', true);
@@ -986,7 +1020,7 @@ $('#mvSave').onclick = async () => {
   try {
     const d = await api(S.move === 'IN' ? 'saveIn' : 'saveOut', {
       date: $('#mvDate').value || todayISO(), type, name, amount, side, direction: chipVal('mdir'),
-      alloc: chipVal('malloc'), note: $('#mvNote').value.trim(), linkId: $('#mvLinkBox').hidden ? '' : $('#mvLink').value,
+      alloc: chipVal('malloc'), note, linkId: $('#mvLinkBox').hidden ? '' : $('#mvLink').value,
       image: S.photo ? S.photo.split(',')[1] : ''
     });
     S.entries.push(...d.entries); S.photo = '';
@@ -1027,9 +1061,12 @@ function renderMonth() {
   }).join('');
   const bank = s.rows.filter(isBankSide);
   $('#moChk').innerHTML = bank.length ? bank.map(e => '<label class="chk"><input type="checkbox" data-id="' + esc(e.ID) + '"' + (e.OnStatement === 'Y' ? ' checked' : '') + '><div class="m"><b>' + esc(e.Name || TYPE_LABEL[e.Type]) + '</b><div class="note" style="margin:0">' + esc(e.Date) + (e.Voucher ? ' · V' + esc(e.Voucher) : '') + ' · ' + esc(e.Kind === 'SLIP' ? 'Card' : TYPE_LABEL[e.Type]) + '</div></div><b>' + (effect(e).bank > 0 ? '+' : '−') + R(Math.abs(effect(e).bank)) + '</b></label>').join('') : '<p class="mute">No bank lines this month yet.</p>';
+  const other = groupForMove(s.rows.filter(e => !isBankSide(e)));
+  $('#moCash').innerHTML = other.length ? other.map(g => '<label class="chk"><input type="checkbox" data-ids="' + esc(g.ids.join(',')) + '"><div class="m"><b>' + esc(g.name) + '</b><div class="note" style="margin:0">' + esc(g.date) + (g.voucher ? ' · V' + esc(g.voucher) : '') + ' · ' + esc(g.label) + (g.ids.length > 1 ? ' · ' + g.ids.length + ' lines' : '') + '</div></div><b>' + R(g.amount) + '</b></label>').join('') : '<p class="mute">No cash or other entries this month.</p>';
   const mrec = findMonth(S.months, S.month);
   $('#moPdfLink').innerHTML = mrec && mrec.PdfUrl ? '<a href="' + esc(mrec.PdfUrl) + '" target="_blank" rel="noopener">Open last PDF</a>' : '';
   $('#moOut').hidden = true;
+  renderPack();
 }
 $('#moChk').addEventListener('change', async e => {
   const cb = e.target.closest('input[type=checkbox]'); if (!cb) return;
@@ -1049,6 +1086,127 @@ $('#moMove').onclick = async () => {
     S.entries = d.entries; renderMonth(); toast(un.length + ' moved to ' + monthName(next));
   } catch (e) { toast(e.message, true); }
   finally { unbusy(); }
+};
+/** Group non-bank entries for moving: lines of one slip (same voucher) stay together. */
+function groupForMove(list) {
+  const out = [], byV = {};
+  list.forEach(e => {
+    if (e.Kind === 'SLIP' && e.Voucher) {
+      let g = byV[e.Voucher];
+      if (!g) { g = byV[e.Voucher] = { ids: [], name: e.Name, date: e.Date, voucher: e.Voucher, amount: 0, label: 'Slip · ' + (SIDE_LABEL[e.Side] || e.Side) }; out.push(g); }
+      g.ids.push(e.ID); g.amount = r2(g.amount + num(e.Amount));
+    } else {
+      out.push({ ids: [e.ID], name: e.Name || TYPE_LABEL[e.Type], date: e.Date, voucher: e.Voucher, amount: num(e.Amount), label: (TYPE_LABEL[e.Type] || e.Type) + ' · ' + (SIDE_LABEL[e.Side] || e.Side) });
+    }
+  });
+  return out;
+}
+$('#moCashMove').onclick = async () => {
+  const ids = [...document.querySelectorAll('#moCash input[type=checkbox]:checked')].flatMap(cb => cb.dataset.ids.split(',').filter(Boolean));
+  if (!ids.length) return toast('Tick what belongs to next month first');
+  const next = addMonth(S.month, 1);
+  busy('Moving to ' + monthName(next));
+  try {
+    const d = await api('bulkUpdate', { updates: ids.map(id => ({ id, fields: { ReconMonth: next } })) });
+    S.entries = d.entries; renderMonth(); toast('Moved to ' + monthName(next));
+  } catch (e) { toast(e.message, true); }
+  finally { unbusy(); }
+};
+
+/* ---------- month-end pack (finance Excel) ---------- */
+const DENOM_LABEL = d => d >= 1 ? 'R' + d : (d * 100) + 'c';
+const countKey = m => 'pcash.count.' + m;
+function loadCounts(m) { try { return JSON.parse(localStorage.getItem(countKey(m)) || '{}') || {}; } catch (e) { return {}; } }
+function storeCounts(m, c) { try { localStorage.setItem(countKey(m), JSON.stringify(c)); } catch (e) { /* storage off: count still saves as a total */ } }
+function readCounts() {
+  const c = {};
+  $$('#pkCount input[data-d]').forEach(i => { const n = parseInt(i.value, 10); if (n > 0) c[i.dataset.d] = n; });
+  return c;
+}
+function packBalances(s, countTotal) {
+  return { openBank: s.open.openBank, openCash: s.open.openCash, stmtClose: s.stmtClose, cashCount: countTotal > 0 ? countTotal : s.cashCount };
+}
+function renderPack() {
+  if (!window.PCashPack) { $('#pkCheck').innerHTML = '<p class="mute">Pack tools not loaded – check your connection and reload.</p>'; return; }
+  const P = window.PCashPack, counts = loadCounts(S.month);
+  $('#pkCount').innerHTML = '<tr><td><b>Note / coin</b></td><td style="text-align:center"><b>Count</b></td><td><b>Total</b></td></tr>' +
+    P.DENOMS.map(d => '<tr><td>' + DENOM_LABEL(d) + '</td><td style="text-align:center"><input data-d="' + d + '" type="text" inputmode="numeric" style="width:90px;padding:6px;font-size:16px;text-align:center" value="' + (counts[String(d)] || '') + '"></td><td data-t="' + d + '"></td></tr>').join('') +
+    '<tr class="tot"><td>Cash on hand</td><td></td><td id="pkCountTot"></td></tr>';
+  updateCountTotals();
+  renderPackCheck();
+  $('#pkShare').hidden = true; $('#pkMsg').textContent = '';
+}
+function updateCountTotals() {
+  const c = readCounts();
+  window.PCashPack.DENOMS.forEach(d => { const cell = document.querySelector('#pkCount td[data-t="' + d + '"]'); if (cell) cell.textContent = R(r2(d * (c[String(d)] || 0))); });
+  $('#pkCountTot').textContent = R(window.PCashPack.countTotal(c));
+}
+function renderPackCheck() {
+  const P = window.PCashPack, s = summary(S.entries, S.months, S.month);
+  const pack = P.build(S.entries, S.month, packBalances(s, P.countTotal(readCounts())));
+  const R0 = pack.recon, w = [];
+  const live = s.rows;
+  const unticked = live.filter(e => isBankSide(e) && e.OnStatement !== 'Y').length;
+  if (unticked) w.push(unticked + ' bank line(s) not ticked in Statement check.');
+  const noSwipe = live.filter(e => e.Type === 'KITCHEN_SALES' && !P.swipesFromNote(e.Note)).length;
+  if (noSwipe) w.push(noSwipe + ' kitchen sales form(s) without a card-machine (swipes) figure.');
+  if (R0.bankClose === null) w.push('Statement closing balance not entered (Balances card).');
+  if (R0.cashClose === null) w.push('Cash not counted yet.');
+  if (R0.openBank === null || R0.openCash === null) w.push('Opening bank / cash missing.');
+  if (pack.expenses.length > 78) w.push('More than 78 voucher lines – the form only has 78 rows.');
+  const row = (a, b, cls) => '<tr' + (cls ? ' class="' + cls + '"' : '') + '><td>' + a + '</td><td>' + b + '</td></tr>';
+  const diff = R0.difference;
+  $('#pkCheck').innerHTML = '<table class="tbl">' +
+    row('Voucher lines', pack.expenses.length + ' (' + (pack.expenses.length ? pack.expenses[pack.expenses.length - 1].voucher : 0) + ' vouchers)') +
+    row('Income lines', String(pack.income.length)) +
+    row('Expenditure (cash + swipes)', R(R0.expenditure)) +
+    row('Income (cash + EFT)', R(R0.income)) +
+    row('EFT purchases (main acc)', R(pack.expTotals.eft)) +
+    row('Input VAT', R(pack.expTotals.vat)) +
+    row('CF expense / PC expense', R(pack.summary.expCF) + ' / ' + R(pack.summary.expPC)) +
+    row('DIFFERENCE recon vs actual', diff === null ? '–' : '<span class="' + (Math.abs(diff) < 0.05 ? 'ok' : 'bad') + '">' + R(diff) + '</span>', 'tot') +
+    '</table>' + (w.length ? '<p class="note" style="color:var(--warn)">⚠ ' + w.map(esc).join('<br>⚠ ') + '</p>' : '<p class="note" style="color:var(--ok)">✓ Ready to build.</p>');
+}
+$('#pkCount').addEventListener('input', () => { updateCountTotals(); renderPackCheck(); });
+$('#pkSaveCount').onclick = async () => {
+  const c = readCounts(), tot = window.PCashPack.countTotal(c);
+  if (!(tot > 0)) return toast('Enter the count first', true);
+  storeCounts(S.month, c);
+  busy('Saving cash count');
+  try {
+    const d = await api('setMonth', { month: S.month, cashCount: tot });
+    S.months = d.months; renderMonth(); toast('Cash count saved · ' + R(tot));
+  } catch (e) { toast(e.message, true); }
+  finally { unbusy(); }
+};
+let lastPack = null;
+$('#pkBuild').onclick = async () => {
+  if (!window.ExcelJS || !window.PCashFill) return toast('Excel tools still loading – try again in a moment', true);
+  const counts = readCounts(); storeCounts(S.month, counts);
+  const s = summary(S.entries, S.months, S.month);
+  const pack = window.PCashPack.build(S.entries, S.month, packBalances(s, window.PCashPack.countTotal(counts)));
+  busy('Building ' + monthName(S.month) + ' pack');
+  try {
+    const res = await fetch('template.xlsx', { cache: 'no-cache' });
+    if (!res.ok) throw new Error('Template not found (template.xlsx)');
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(await res.arrayBuffer());
+    const warn = window.PCashFill.fill(wb, pack, counts);
+    const buf = await wb.xlsx.writeBuffer();
+    const name = window.PCashFill.fileName(S.month);
+    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    lastPack = new File([blob], name, { type: blob.type });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+    $('#pkShare').hidden = !(navigator.canShare && navigator.canShare({ files: [lastPack] }));
+    $('#pkMsg').textContent = 'Downloaded ' + name + '.' + (warn.length ? ' Note: ' + warn.join(' ') : '');
+    toast('Pack built · ' + name);
+  } catch (e) { toast(e.message, true); }
+  finally { unbusy(); }
+};
+$('#pkShare').onclick = async () => {
+  if (!lastPack) return;
+  try { await navigator.share({ files: [lastPack], title: lastPack.name }); } catch (e) { /* user closed the share sheet */ }
 };
 $('#moSave').onclick = async () => {
   const val = id => { const t = $(id).value.trim(); if (t === '') return ''; const n = parseMoney(t); if (!isFinite(n)) throw new Error('Check the amounts'); return n; };
