@@ -66,6 +66,11 @@
   .tag.pc{background:#ede9fe;color:var(--pc)} .tag.cf{background:#cffafe;color:var(--cf)} .tag.w{background:#fef3c7;color:var(--warn)} .tag.v{background:#fee2e2;color:var(--bad)}
   .thumb{display:flex;gap:12px;align-items:center}
   .thumb img{width:84px;height:84px;object-fit:cover;border-radius:10px;border:1px solid var(--line);background:#f9fafb}
+  .pages{display:flex;gap:10px;flex-wrap:wrap}
+  .pg{position:relative;width:72px;height:72px}
+  .pg img{width:72px;height:72px;object-fit:cover;border-radius:10px;border:1px solid var(--line);background:#f9fafb}
+  .pg b{position:absolute;left:4px;bottom:4px;background:rgba(0,0,0,.65);color:#fff;font-size:11px;border-radius:5px;padding:0 5px}
+  .pg .pgx{position:absolute;top:-7px;right:-7px;width:24px;height:24px;border-radius:50%;border:0;background:#111;color:#fff;font-size:12px;line-height:24px;padding:0}
   .thumb .none{width:84px;height:84px;border-radius:10px;border:2px dashed #d1d5db;display:flex;align-items:center;justify-content:center;color:var(--mute);font-size:12px;text-align:center}
   #cropWrap{background:#111;border-radius:12px;overflow:hidden;touch-action:none}
   #cropCv{display:block;width:100%;touch-action:none}
@@ -148,13 +153,9 @@
   <!-- SLIP FORM -->
   <section id="v-slip">
     <div class="card">
-      <div class="thumb">
-        <div id="sThumb"></div>
-        <div style="flex:1">
-          <div class="row"><button class="btn alt sm" id="sRetake">📷 Retake</button><button class="btn alt sm" id="sGal">🖼</button></div>
-          <div class="note" id="sThumbNote"></div>
-        </div>
-      </div>
+      <div id="sThumb" class="pages"></div>
+      <div class="row" style="margin-top:10px"><button class="btn alt sm" id="sRetake">📷 Add page</button><button class="btn alt sm" id="sGal">🖼 Add page</button></div>
+      <div class="note" id="sThumbNote"></div>
 
       <label>Goes to</label>
       <div class="chips big" data-name="alloc">
@@ -247,11 +248,9 @@
       <label>Note (optional)</label>
       <input id="mvNote" type="text">
 
-      <label>Proof (optional – POP, slip)</label>
-      <div class="thumb">
-        <div id="mvThumb"></div>
-        <div class="row"><button class="btn alt sm" id="mvSnap">📷 Snap</button><button class="btn alt sm" id="mvGal">🖼</button><button class="btn alt sm" id="mvClear">✕</button></div>
-      </div>
+      <label>Proof (optional – POP, slip, control form; add every page)</label>
+      <div id="mvThumb" class="pages"></div>
+      <div class="row" style="margin-top:10px"><button class="btn alt sm" id="mvSnap">📷 Add page</button><button class="btn alt sm" id="mvGal">🖼 Add page</button><button class="btn alt sm" id="mvClear">✕ Clear all</button></div>
       <div style="height:16px"></div>
       <div class="row">
         <button class="btn alt" id="mvCancel">Cancel</button>
@@ -348,7 +347,7 @@
       <button class="btn alt" id="stReload">Reload data</button>
       <div style="height:10px"></div>
       <button class="btn red" id="stLock">Lock app on this phone</button>
-      <p class="note">PCash Vs IP v1.0 · test build</p>
+      <p class="note">PCash Vs IP v1.1 · multi-page photos · test build</p>
     </div>
   </section>
 </main>
@@ -666,7 +665,7 @@ const store = {
 const S = {
   entries: [], months: [], month: todayISO().slice(0, 7), view: 'lock',
   pin: store.get('pin') || '', api: store.get('api') || API_URL, comma: store.get('comma') === '1',
-  photo: '', photoFor: 'slip', move: 'IN', editId: null, warnNoPhoto: false
+  photos: [], photoFor: 'slip', move: 'IN', editId: null, warnNoPhoto: false
 };
 
 function busy(msg) { $('#busyMsg').textContent = msg || 'Working…'; $('#busy').classList.add('on'); }
@@ -767,6 +766,7 @@ function entryLine(e) {
   if (e.Kind === 'SLIP' && e.Side === 'OWN') tags.push('<span class="tag w">Own card</span>');
   if (e.Date.slice(0, 7) !== e.ReconMonth) tags.push('<span class="tag w">bought ' + esc(monthName(e.Date.slice(0, 7))) + '</span>');
   if (!e.FileId && e.Kind === 'SLIP') tags.push('<span class="tag v">no photo</span>');
+  if (pageIds(e).length > 1) tags.push('<span class="tag">' + pageIds(e).length + ' pages</span>');
   if (isBankSide(e) && e.OnStatement === 'Y') tags.push('<span class="tag">✓ stmt</span>');
   const what = e.Kind === 'SLIP' ? SIDE_LABEL[e.Side] : TYPE_LABEL[e.Type] + (e.Kind !== 'SLIP' && e.Type !== 'CASH_EXCHANGE' ? ' · ' + (e.Side === 'BANK' ? 'Bank' : 'Cash box') : '');
   const d = e.Date.split('-');
@@ -795,7 +795,31 @@ $('#hList').addEventListener('click', e => { const it = e.target.closest('.it');
 
 /* ---------- camera + crop ---------- */
 const C = { src: null, q: null, drag: -1, k: 1 };
-function pickPhoto(forWhat, camera) { S.photoFor = forWhat; (camera ? $('#camIn') : $('#galIn')).click(); }
+function pickPhoto(forWhat, camera) {
+  if (forWhat !== 'edit' && S.photos.length >= 10) return toast('Max 10 pages per entry', true);
+  S.photoFor = forWhat; (camera ? $('#camIn') : $('#galIn')).click();
+}
+/* ---------- multi-page photos ---------- */
+const MAX_PAGES = 10;
+const pageIds = e => e.FileId ? [e.FileId].concat(String(e.MoreFiles || '').split(',').map(x => x.trim()).filter(Boolean)) : [];
+const photoPayload = () => S.photos.map(p => p.split(',')[1]);
+function pagesHTML(list, none) {
+  if (!list.length) return '<div class="thumb"><div class="none">' + none + '</div></div>';
+  return list.map((p, i) => '<div class="pg"><img src="' + p + '" alt="page ' + (i + 1) + '"><b>' + (i + 1) + '</b><button type="button" class="pgx" data-pg="' + i + '" aria-label="Remove page ' + (i + 1) + '">✕</button></div>').join('');
+}
+function removePage(ev, rerender) {
+  const b = ev.target.closest('.pgx'); if (!b) return;
+  S.photos.splice(Number(b.dataset.pg), 1); rerender();
+}
+async function addPagesToEntry(shot) {
+  const id = S.editId;
+  busy('Adding page');
+  try {
+    const d = await api('addPages', { id, images: [shot.split(',')[1]] });
+    S.entries = d.entries; openEdit(id); toast('Page added · ' + d.pages + ' page' + (d.pages > 1 ? 's' : '') + ' now');
+  } catch (e) { toast(e.message, true); show('edit'); }
+  finally { unbusy(); }
+}
 ['#camIn', '#galIn'].forEach(id => $(id).addEventListener('change', e => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) loadPhoto(f); }));
 async function loadPhoto(file) {
   busy('Opening photo');
@@ -859,7 +883,7 @@ $('#cRot').onclick = () => {
 };
 $('#cAuto').onclick = () => { autoCorners(); drawCrop(); };
 $('#cFull').onclick = () => { const w = C.src.width, h = C.src.height; C.q = [[0, 0], [w, 0], [w, h], [0, h]]; drawCrop(); };
-$('#cCancel').onclick = () => show(S.photoFor === 'slip' ? (S.slipOpen ? 'slip' : 'home') : 'move');
+$('#cCancel').onclick = () => show(S.photoFor === 'edit' ? 'edit' : S.photoFor === 'slip' ? (S.slipOpen ? 'slip' : 'home') : 'move');
 $('#cUse').onclick = () => {
   busy('Straightening');
   setTimeout(() => {
@@ -871,7 +895,9 @@ $('#cUse').onclick = () => {
       if ($('#cEnh').checked) enhance(out);
       const cv = document.createElement('canvas'); cv.width = ow; cv.height = oh;
       cv.getContext('2d').putImageData(new ImageData(out, ow, oh), 0, 0);
-      S.photo = cv.toDataURL('image/jpeg', 0.8);
+      const shot = cv.toDataURL('image/jpeg', 0.8);
+      if (S.photoFor === 'edit') { setTimeout(() => addPagesToEntry(shot), 0); return; }
+      if (S.photos.length < MAX_PAGES) S.photos.push(shot); else toast('Max 10 pages per entry', true);
       if (S.photoFor === 'slip') { if (!S.slipOpen) resetSlip(); S.slipOpen = true; renderSlipThumb(); show('slip'); }
       else { renderMoveThumb(); show('move'); }
     } catch (e) { toast('Could not crop: ' + e.message, true); }
@@ -893,8 +919,9 @@ function resetSlip() {
   S.warnNoPhoto = false; syncSlip();
 }
 function renderSlipThumb() {
-  $('#sThumb').innerHTML = S.photo ? '<img src="' + S.photo + '" alt="slip">' : '<div class="none">no photo</div>';
-  $('#sThumbNote').textContent = S.photo ? 'Photo ready' : 'No photo yet';
+  const n = S.photos.length;
+  $('#sThumb').innerHTML = pagesHTML(S.photos, 'no photo');
+  $('#sThumbNote').textContent = n ? n + (n > 1 ? ' pages' : ' page') + ' ready – long slip? tap Add page for the next page' : 'No photo yet';
 }
 function syncSlip() {
   const split = chipVal('alloc') === 'SPLIT', vat = $('#sVatOn').checked;
@@ -912,9 +939,10 @@ document.addEventListener('click', e => {
   if (!isFinite(a)) return toast('Enter the amount first', true);
   $('#' + vatId).value = vatFromIncl(a).toFixed(2);
 });
+$('#sThumb').addEventListener('click', ev => removePage(ev, renderSlipThumb));
 $('#sRetake').onclick = () => pickPhoto('slip', true);
 $('#sGal').onclick = () => pickPhoto('slip', false);
-$('#sCancel').onclick = () => { S.slipOpen = false; S.photo = ''; show('home'); };
+$('#sCancel').onclick = () => { S.slipOpen = false; S.photos = []; show('home'); };
 $('#sSave').onclick = async () => {
   const alloc = chipVal('alloc'), side = chipVal('side'), vatOn = $('#sVatOn').checked;
   if (!alloc) return toast('Pick PC, CF or Split', true);
@@ -933,12 +961,12 @@ $('#sSave').onclick = async () => {
   if (!side) return toast('Pick how it was paid', true);
   const vendor = $('#sVendor').value.trim(); if (!vendor) return toast('Enter the vendor', true);
   const date = $('#sDate').value || todayISO();
-  if (!S.photo && !S.warnNoPhoto) { S.warnNoPhoto = true; return toast('No photo attached – tap Save again to save without one', true); }
+  if (!S.photos.length && !S.warnNoPhoto) { S.warnNoPhoto = true; return toast('No photo attached – tap Save again to save without one', true); }
   busy('Saving slip');
   try {
-    const d = await api('saveSlip', { date, vendor, side, note: $('#sNote').value.trim(), image: S.photo ? S.photo.split(',')[1] : '', lines });
+    const d = await api('saveSlip', { date, vendor, side, note: $('#sNote').value.trim(), images: photoPayload(), lines });
     S.entries.push(...d.entries);
-    S.photo = ''; S.slipOpen = false;
+    S.photos = []; S.slipOpen = false;
     S.month = d.entries[0].ReconMonth;
     show('home');
     toast('Saved V' + d.voucher + ' · ' + R(lines.reduce((t, l) => t + l.amount, 0)));
@@ -950,7 +978,7 @@ $('#sSave').onclick = async () => {
 const IN_TYPES = [['KITCHEN_SALES', 'Kitchen sales', 'CASH'], ['STORE_SALES', 'Store cash sales', 'CASH'], ['CASH_EXCHANGE', 'Cash exchange', 'BANK'], ['REPAYMENT', 'Withdrawal repaid', 'BANK'], ['TRANSFER', 'Transfer from main acc', 'BANK'], ['OTHER_IN', 'Other', 'CASH']];
 const OUT_TYPES = [['STAFF_WITHDRAWAL', 'Staff withdrawal', 'CASH'], ['CASH_DRAW', 'Cash draw (Mannas)', 'CASH'], ['REIMBURSE', 'Own card reimbursed', 'CASH'], ['BANK_FEE', 'Bank fee', 'BANK'], ['OTHER_OUT', 'Other', 'CASH']];
 function openMove(kind, preset) {
-  S.move = kind; S.photo = ''; S.photoFor = 'move';
+  S.move = kind; S.photos = []; S.photoFor = 'move';
   const types = kind === 'IN' ? IN_TYPES : OUT_TYPES;
   $('#mvTitle').textContent = kind === 'IN' ? 'Money in' : 'Cash out';
   $('#mvTypes').innerHTML = types.map(t => '<button data-v="' + t[0] + '">' + esc(t[1]) + '</button>').join('');
@@ -998,11 +1026,12 @@ $('#mvLink').addEventListener('change', () => {
   const w = oi.withdrawals.find(o => o.entry.ID === v); if (w) { $('#mvAmount').value = w.outstanding.toFixed(2); $('#mvName').value = w.entry.Name; }
   const o = oi.own.find(x => 'V' + x.voucher === v); if (o) { $('#mvAmount').value = o.outstanding.toFixed(2); $('#mvName').value = 'Bertus'; }
 });
-function renderMoveThumb() { $('#mvThumb').innerHTML = S.photo ? '<img src="' + S.photo + '" alt="proof">' : '<div class="none">no proof</div>'; }
+function renderMoveThumb() { $('#mvThumb').innerHTML = pagesHTML(S.photos, 'no proof'); }
+$('#mvThumb').addEventListener('click', ev => removePage(ev, renderMoveThumb));
 $('#mvSnap').onclick = () => pickPhoto('move', true);
 $('#mvGal').onclick = () => pickPhoto('move', false);
-$('#mvClear').onclick = () => { S.photo = ''; renderMoveThumb(); };
-$('#mvCancel').onclick = () => { S.photo = ''; show('home'); };
+$('#mvClear').onclick = () => { S.photos = []; renderMoveThumb(); };
+$('#mvCancel').onclick = () => { S.photos = []; show('home'); };
 $('#hIn').onclick = () => openMove('IN');
 $('#hOut').onclick = () => openMove('OUT');
 $('#mvSave').onclick = async () => {
@@ -1021,9 +1050,9 @@ $('#mvSave').onclick = async () => {
     const d = await api(S.move === 'IN' ? 'saveIn' : 'saveOut', {
       date: $('#mvDate').value || todayISO(), type, name, amount, side, direction: chipVal('mdir'),
       alloc: chipVal('malloc'), note, linkId: $('#mvLinkBox').hidden ? '' : $('#mvLink').value,
-      image: S.photo ? S.photo.split(',')[1] : ''
+      images: photoPayload()
     });
-    S.entries.push(...d.entries); S.photo = '';
+    S.entries.push(...d.entries); S.photos = [];
     S.month = d.entries[0].ReconMonth;
     show('home'); toast('Saved · ' + TYPE_LABEL[type] + ' ' + R(amount));
   } catch (e) { toast(e.message, true); }
@@ -1031,8 +1060,8 @@ $('#mvSave').onclick = async () => {
 };
 
 /* ---------- photo shortcuts ---------- */
-$('#hSnap').onclick = () => { S.slipOpen = false; S.photo = ''; pickPhoto('slip', true); };
-$('#hGallery').onclick = () => { S.slipOpen = false; S.photo = ''; pickPhoto('slip', false); };
+$('#hSnap').onclick = () => { S.slipOpen = false; S.photos = []; pickPhoto('slip', true); };
+$('#hGallery').onclick = () => { S.slipOpen = false; S.photos = []; pickPhoto('slip', false); };
 
 /* ---------- month ---------- */
 function renderMonth() {
@@ -1250,7 +1279,9 @@ function openEdit(id) {
   $('#edTitle').textContent = (e.Voucher ? 'V' + e.Voucher + (e.Line ? '.' + e.Line : '') + ' · ' : '') + (e.Kind === 'SLIP' ? 'Slip' : TYPE_LABEL[e.Type]);
   const sides = e.Kind === 'SLIP' ? ['CARD', 'CASH', 'OWN', 'EFT'] : ['CASH', 'BANK'];
   let h = '';
-  if (e.FileUrl) h += '<p><a href="' + esc(e.FileUrl) + '" target="_blank" rel="noopener">📄 Open photo in Drive</a></p>';
+  const pg = pageIds(e);
+  if (pg.length) h += '<p>' + pg.map((id, i) => '<a href="' + esc(i === 0 && e.FileUrl ? e.FileUrl : 'https://drive.google.com/file/d/' + id + '/view') + '" target="_blank" rel="noopener">📄 ' + (pg.length > 1 ? 'Page ' + (i + 1) : 'Open photo in Drive') + '</a>').join(' &nbsp; ') + '</p>';
+  if (e.Status !== 'VOID') h += '<div class="row" style="margin-bottom:6px"><button type="button" class="btn alt sm" id="edAddCam">📷 ' + (pg.length ? 'Add page' : 'Add photo') + '</button><button type="button" class="btn alt sm" id="edAddGal">🖼 ' + (pg.length ? 'Add page' : 'Add photo') + '</button></div>';
   h += '<div class="split2"><div><label>Date</label><input id="edDate" type="date" value="' + esc(e.Date) + '"></div><div><label>Name / vendor</label><input id="edName" type="text" value="' + esc(e.Name) + '"></div></div>';
   if (e.Kind === 'SLIP') h += '<label>Goes to</label><div class="chips" data-name="edAlloc"><button data-v="PC">PC</button><button data-v="CF">CF</button></div>';
   h += '<div class="split2"><div><label>Amount</label><input id="edAmt" class="money" type="text" inputmode="decimal" value="' + num(e.Amount).toFixed(2) + '"></div>';
@@ -1260,6 +1291,7 @@ function openEdit(id) {
   h += '<label>Note</label><input id="edNote" type="text" value="' + esc(e.Note) + '">';
   if (e.Status === 'VOID') h += '<p class="bad"><b>This entry is VOID.</b></p>';
   $('#edBody').innerHTML = h;
+  if ($('#edAddCam')) { $('#edAddCam').onclick = () => pickPhoto('edit', true); $('#edAddGal').onclick = () => pickPhoto('edit', false); }
   if (e.Kind === 'SLIP') setChip('edAlloc', e.Alloc);
   setChip('edSide', e.Side);
   $('#edVoid').hidden = e.Status === 'VOID';
